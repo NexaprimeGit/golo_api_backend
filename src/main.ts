@@ -3,10 +3,7 @@ import { MicroserviceOptions, Transport } from '@nestjs/microservices';
 import { AppModule } from './app.module';
 import { Logger, ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import * as dotenv from 'dotenv';
 import { json, urlencoded } from 'express';
-
-dotenv.config();
 
 const parseBoolean = (value?: string): boolean => {
   if (!value) return false;
@@ -25,6 +22,7 @@ const validationPipe = new ValidationPipe({
 async function bootstrap() {
   const logger = new Logger('Bootstrap');
   const kafkaEnabled = parseBoolean(process.env.ENABLE_KAFKA);
+  const kafkaStrict = parseBoolean(process.env.KAFKA_STRICT ?? 'false');
 
   const app = await NestFactory.create(AppModule, { rawBody: true });
   const configService = app.get(ConfigService);
@@ -42,29 +40,40 @@ async function bootstrap() {
       .filter(Boolean);
 
     if (brokers.length === 0) {
-      throw new Error(
-        'ENABLE_KAFKA=true but KAFKA_BROKERS is empty. Set KAFKA_BROKERS in .env.',
-      );
+      const message = 'ENABLE_KAFKA=true but KAFKA_BROKERS is empty. Set KAFKA_BROKERS in .env.';
+      if (kafkaStrict) {
+        throw new Error(message);
+      }
+      logger.warn(`${message} Starting HTTP server without Kafka.`);
+    } else {
+      try {
+        app.connectMicroservice<MicroserviceOptions>({
+          transport: Transport.KAFKA,
+          options: {
+            client: {
+              clientId: process.env.KAFKA_CLIENT_ID || 'golo-backend',
+              brokers,
+            },
+            consumer: {
+              groupId: process.env.KAFKA_GROUP_ID || 'golo-consumer-group',
+            },
+            producer: {
+              allowAutoTopicCreation: true,
+            },
+          },
+        });
+
+        await app.startAllMicroservices();
+        logger.log(`Kafka mode enabled. Brokers: ${brokers.join(', ')}`);
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        const message = `Kafka startup failed for brokers ${brokers.join(', ')}: ${errorMessage}`;
+        if (kafkaStrict) {
+          throw new Error(message);
+        }
+        logger.warn(`${message}. Starting HTTP server without Kafka.`);
+      }
     }
-
-    app.connectMicroservice<MicroserviceOptions>({
-      transport: Transport.KAFKA,
-      options: {
-        client: {
-          clientId: process.env.KAFKA_CLIENT_ID || 'golo-backend',
-          brokers,
-        },
-        consumer: {
-          groupId: process.env.KAFKA_GROUP_ID || 'golo-consumer-group',
-        },
-        producer: {
-          allowAutoTopicCreation: true,
-        },
-      },
-    });
-
-    await app.startAllMicroservices();
-    logger.log(`Kafka mode enabled. Brokers: ${brokers.join(', ')}`);
   }
 
   const corsOrigins = configService.get<string[]>('config.cors.origins') || [];
@@ -75,6 +84,9 @@ async function bootstrap() {
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
     allowedHeaders: ['Content-Type', 'Authorization'],
   });
+
+  // Set global API prefix
+  app.setGlobalPrefix('api');
 
   const port = configService.get('config.service.port');
   await app.listen(port);

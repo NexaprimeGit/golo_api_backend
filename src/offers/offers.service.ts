@@ -254,6 +254,18 @@ export class OffersService implements OnModuleInit {
     } catch (error: any) {
       this.logger.warn(`[Offers] Index cleanup skipped: ${error?.message || 'unknown error'}`);
     }
+    // Start background status synchronization to flip offers from under_review -> active and active -> expired
+    try {
+      // Run once at startup
+      this.syncOfferStatuses().catch((err) => this.logger.warn(`[Offers] Initial sync failed: ${err?.message || err}`));
+      // Schedule periodic sync every 60 seconds
+      setInterval(() => {
+        this.syncOfferStatuses().catch((err) => this.logger.warn(`[Offers] Periodic sync failed: ${err?.message || err}`));
+      }, 60 * 1000);
+      this.logger.log('[Offers] Scheduled background status sync every 60s');
+    } catch (err) {
+      this.logger.warn('[Offers] Scheduling status sync skipped: ' + String(err));
+    }
   }
 
   async submitOfferPromotionRequest(merchantId: string, payload: any) {
@@ -304,6 +316,11 @@ export class OffersService implements OnModuleInit {
     const platformFee = Number(payload.platformFee ?? (selectedDays > 0 ? 49 : 0));
     const computedTotal = dailyRate * selectedDays + platformFee;
 
+    // Determine initial status based on startDate (UTC day boundaries)
+    const nowUtc = new Date();
+    nowUtc.setUTCHours(0, 0, 0, 0);
+    const initialStatus = startDate <= nowUtc ? OfferPromotionStatus.ACTIVE : OfferPromotionStatus.UNDER_REVIEW;
+
      const request = await this.offerModel.create({
        requestId: uuidv4(),
        merchantId,
@@ -336,9 +353,9 @@ export class OffersService implements OnModuleInit {
        termsAndConditions: payload.termsAndConditions || '',
        exampleUsage: payload.exampleUsage || '',
        selectedProducts: Array.isArray(payload.selectedProducts) ? payload.selectedProducts : [],
-       status: OfferPromotionStatus.UNDER_REVIEW,
+      status: initialStatus,
        paymentStatus: OfferPaymentStatus.PENDING,
-       isActive: false,
+       isActive: initialStatus === OfferPromotionStatus.ACTIVE,
      });
 
     if (this.kafkaService) {
@@ -955,5 +972,49 @@ export class OffersService implements OnModuleInit {
     const result = { data, pagination: { page: safePage, limit: safeLimit, total, pages } };
     await this.writeCache(cacheKey, result, this.cacheTtlSeconds.nearbyOffers);
     return result;
+  }
+
+  // Background job: activate offers whose startDate has arrived, expire offers whose endDate passed
+  private async syncOfferStatuses() {
+    const now = new Date();
+    // Activate offers where startDate <= now <= endDate and status is under_review or approved
+    try {
+      const activateResult = await this.offerModel.updateMany(
+        {
+          status: { $in: [OfferPromotionStatus.UNDER_REVIEW, OfferPromotionStatus.APPROVED] },
+          startDate: { $lte: now },
+          endDate: { $gte: now },
+        },
+        { $set: { status: OfferPromotionStatus.ACTIVE, isActive: true } },
+      ).exec();
+
+      const activated = Number((activateResult && (activateResult as any).modifiedCount) || 0);
+      if (activated > 0) {
+        this.logger.log(`[Offers] Activated ${activated} offers`);
+        // Clear nearby cache so newly active offers appear quickly
+        await this.clearCache('golo:offers:nearby:*');
+      }
+    } catch (err: any) {
+      this.logger.warn('[Offers] Activation pass failed: ' + (err?.message || err));
+    }
+
+    // Expire offers where endDate < now and status is not expired
+    try {
+      const expireResult = await this.offerModel.updateMany(
+        {
+          status: { $ne: OfferPromotionStatus.EXPIRED },
+          endDate: { $lt: now },
+        },
+        { $set: { status: OfferPromotionStatus.EXPIRED, isActive: false } },
+      ).exec();
+
+      const expired = Number((expireResult && (expireResult as any).modifiedCount) || 0);
+      if (expired > 0) {
+        this.logger.log(`[Offers] Expired ${expired} offers`);
+        await this.clearCache('golo:offers:nearby:*');
+      }
+    } catch (err: any) {
+      this.logger.warn('[Offers] Expiration pass failed: ' + (err?.message || err));
+    }
   }
 }

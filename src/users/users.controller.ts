@@ -1,13 +1,13 @@
 import { 
   Controller, Post, Body, Get, Put, Delete, Param, 
-  UseGuards, Query, Ip, NotFoundException 
+  UseGuards, Query, Ip, NotFoundException, Req, Res 
 } from '@nestjs/common';
+import { Request, Response } from 'express';
 
 import { UsersService } from './users.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import { SocialAuthDto } from './dto/social-auth.dto';
-import { RefreshTokenDto } from './dto/refresh-token.dto';
 
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
@@ -15,6 +15,7 @@ import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { UserRole } from './schemas/user.schema';
 import { RedisService } from '../common/services/redis.service';
+import { getRefreshTokenFromRequest } from '../common/utils/auth-token.util';
 
 @Controller('users')
 export class UsersController {
@@ -23,6 +24,35 @@ export class UsersController {
     private readonly usersService: UsersService,
     private readonly redisService: RedisService,
   ) {}
+
+  private isProduction() {
+    return process.env.NODE_ENV === 'production';
+  }
+
+  private cookieBaseOptions() {
+    return {
+      httpOnly: true,
+      secure: this.isProduction(),
+      sameSite: this.isProduction() ? ('none' as const) : ('lax' as const),
+      path: '/',
+    };
+  }
+
+  private setAuthCookies(res: Response, accessToken: string, refreshToken: string) {
+    res.cookie('accessToken', accessToken, {
+      ...this.cookieBaseOptions(),
+      maxAge: 15 * 60 * 1000,
+    });
+    res.cookie('refreshToken', refreshToken, {
+      ...this.cookieBaseOptions(),
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+    });
+  }
+
+  private clearAuthCookies(res: Response) {
+    res.clearCookie('accessToken', this.cookieBaseOptions());
+    res.clearCookie('refreshToken', this.cookieBaseOptions());
+  }
 
   // ==================== USER REPORT ====================
   @Post(':id/report')
@@ -80,21 +110,33 @@ export class UsersController {
   }
 
   @Post('login')
-  async login(@Body() dto: LoginDto, @Ip() ip: string) {
+  async login(@Body() dto: LoginDto, @Ip() ip: string, @Res({ passthrough: true }) res: Response) {
     const result = await this.usersService.login(dto, ip);
-    return { success: true, message: 'Login successful', data: result };
+    this.setAuthCookies(res, result.accessToken, result.refreshToken);
+    return { success: true, message: 'Login successful', data: { user: result.user } };
   }
 
   @Post('social-auth')
-  async socialAuth(@Body() dto: SocialAuthDto, @Ip() ip: string) {
+  async socialAuth(@Body() dto: SocialAuthDto, @Ip() ip: string, @Res({ passthrough: true }) res: Response) {
     const result = await this.usersService.socialAuth(dto, ip);
-    return { success: true, message: 'Social login successful', data: result };
+    this.setAuthCookies(res, result.accessToken, result.refreshToken);
+    return { success: true, message: 'Social login successful', data: { user: result.user } };
   }
 
   @Post('refresh')
-  async refreshToken(@Body() dto: RefreshTokenDto) {
-    const result = await this.usersService.refreshToken(dto.refreshToken);
-    return { success: true, data: result };
+  async refreshToken(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    const refreshToken = getRefreshTokenFromRequest(req);
+    if (!refreshToken) {
+      this.clearAuthCookies(res);
+      return { success: false, message: 'Refresh token missing' };
+    }
+
+    const result = await this.usersService.refreshToken(refreshToken);
+    res.cookie('accessToken', result.accessToken, {
+      ...this.cookieBaseOptions(),
+      maxAge: 15 * 60 * 1000,
+    });
+    return { success: true };
   }
 
   @Get('dashboard/stats')
@@ -113,8 +155,12 @@ export class UsersController {
   // ==================== USER ROUTES ====================
   @Post('logout')
   @UseGuards(JwtAuthGuard)
-  async logout(@CurrentUser() user: any, @Body() dto: RefreshTokenDto) {
-    await this.usersService.logout(user.id, dto.refreshToken);
+  async logout(@CurrentUser() user: any, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    const refreshToken = getRefreshTokenFromRequest(req);
+    if (refreshToken) {
+      await this.usersService.logout(user.id, refreshToken);
+    }
+    this.clearAuthCookies(res);
     return { success: true, message: 'Logout successful' };
   }
 

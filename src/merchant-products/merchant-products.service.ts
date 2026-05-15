@@ -305,6 +305,8 @@ export class MerchantProductsService implements OnModuleInit {
   private mapProduct(product: MerchantProductDocument) {
     return {
       id: String(product._id),
+      productId: String(product._id),
+      merchantId: product.merchantId,
       name: product.name,
       category: product.category,
       description: product.description,

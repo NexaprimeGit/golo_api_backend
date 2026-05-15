@@ -1,5 +1,6 @@
 import { Injectable, ExecutionContext, UnauthorizedException, Logger } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
+import { getAccessTokenFromRequest } from '../utils/auth-token.util';
 
 @Injectable()
 export class JwtAuthGuard extends AuthGuard('jwt') {
@@ -7,15 +8,13 @@ export class JwtAuthGuard extends AuthGuard('jwt') {
 
   canActivate(context: ExecutionContext) {
     const request = context.switchToHttp().getRequest();
-    const authHeader = request.headers.authorization;
+    const token = getAccessTokenFromRequest(request);
     
-    this.logger.debug(`[JWT Guard] Authorization header: ${authHeader ? 'Present' : 'Missing'}`);
-    
-    if (authHeader) {
-      const parts = authHeader.split(' ');
-      if (parts.length === 2 && parts[0].toLowerCase() === 'bearer') {
-        this.logger.debug(`[JWT Guard] Token format valid (Bearer)`);
-      } else {
+    this.logger.debug(`[JWT Guard] Token source: ${token ? 'Present' : 'Missing'}`);
+
+    if (!token && request?.headers?.authorization) {
+      const parts = request.headers.authorization.split(' ');
+      if (parts.length !== 2 || parts[0].toLowerCase() !== 'bearer') {
         this.logger.warn(`[JWT Guard] Invalid token format: ${parts[0]}`);
       }
     }

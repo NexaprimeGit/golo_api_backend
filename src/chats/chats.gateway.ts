@@ -13,6 +13,7 @@ import { Server, Socket } from 'socket.io';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { ChatsService } from './chats.service';
+import { getAccessTokenFromRequest } from '../common/utils/auth-token.util';
 
 @WebSocketGateway({
 	namespace: '/chat',
@@ -38,8 +39,8 @@ export class ChatsGateway implements OnGatewayConnection, OnGatewayDisconnect {
 	async handleConnection(client: Socket) {
 		try {
 			const tokenFromAuth = client.handshake.auth?.token;
-			const tokenFromHeader = client.handshake.headers.authorization?.replace('Bearer ', '');
-			const token = tokenFromAuth || tokenFromHeader;
+			const tokenFromRequest = getAccessTokenFromRequest(client.handshake as any);
+			const token = tokenFromAuth || tokenFromRequest;
 
 			if (!token) {
 				throw new WsException('Authentication token is required');

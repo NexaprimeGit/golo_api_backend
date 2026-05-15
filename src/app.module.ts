@@ -21,6 +21,7 @@ import { MerchantsModule } from './merchants/merchants.module';
 import { OrdersModule } from './orders/orders.module';
 import { VouchersModule } from './vouchers/vouchers.module';
 import { ReviewsModule } from './reviews/reviews.module';
+import { ApiGatewayModule } from './api-gateway/api-gateway.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 
@@ -58,6 +59,7 @@ const logger = new Logger('MongoDB');
 
     // Feature Modules - order doesn't matter with forwardRef
     RedisModule, // Global Redis caching
+    ApiGatewayModule, // API Gateway with auth, rate limiting, logging
     KafkaModule,
     AdsModule,
     UsersModule,
@@ -72,7 +74,7 @@ const logger = new Logger('MongoDB');
     MerchantDashboardModule,
     BannersModule,
     OffersModule,
-
+    
     OrdersModule,
     VouchersModule,
     ReviewsModule,

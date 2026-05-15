@@ -17,6 +17,7 @@ import { CallInviteDto } from './dto/call-invite.dto';
 import { CallIdDto } from './dto/call-id.dto';
 import { CallEndDto } from './dto/call-end.dto';
 import { WebRtcSignalDto } from './dto/webrtc-signal.dto';
+import { getAccessTokenFromRequest } from '../common/utils/auth-token.util';
 
 @WebSocketGateway({
   namespace: '/calls',
@@ -41,8 +42,8 @@ export class CallsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   async handleConnection(client: Socket) {
     try {
       const tokenFromAuth = client.handshake.auth?.token;
-      const tokenFromHeader = client.handshake.headers.authorization?.replace('Bearer ', '');
-      const token = tokenFromAuth || tokenFromHeader;
+      const tokenFromRequest = getAccessTokenFromRequest(client.handshake as any);
+      const token = tokenFromAuth || tokenFromRequest;
 
       if (!token) {
         throw new WsException('Authentication token is required');

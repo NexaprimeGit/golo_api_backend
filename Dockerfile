@@ -1,4 +1,4 @@
-# Backend Dockerfile - reliable multi-stage build using Debian-slim
+# Backend Dockerfile - multi-stage (build + runtime)
 FROM node:20-bullseye-slim AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -12,15 +12,14 @@ RUN apt-get update \
 # Set python for node-gyp to use
 ENV npm_config_python=/usr/bin/python3
 
-# Install dependencies and build
-COPY package*.json ./
+# Install dependencies (including dev) and build
+COPY package.json package-lock.json ./
 RUN npm ci
-
 COPY . .
 RUN npm run build
 
-# Production image
-FROM node:20-bullseye-slim
+# Production image (only production deps + dist)
+FROM node:20-bullseye-slim AS runner
 
 ENV NODE_ENV=production
 WORKDIR /app
@@ -28,12 +27,13 @@ WORKDIR /app
 # Create app user and group (use non-root for better security)
 RUN groupadd -r app && useradd -r -g app -s /sbin/nologin app || true
 
-# Copy package metadata from builder and install production deps
-COPY --from=builder /app/package*.json ./
 RUN apt-get update \
 	&& apt-get install -y --no-install-recommends curl ca-certificates \
-	&& rm -rf /var/lib/apt/lists/* \
-	&& npm ci --only=production --no-audit --progress=false
+	&& rm -rf /var/lib/apt/lists/*
+
+# Install production dependencies only
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev && npm cache clean --force
 
 # Copy built output and scripts from builder
 COPY --from=builder /app/dist ./dist
